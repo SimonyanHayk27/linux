@@ -1,0 +1,81 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+
+#define READ_END 0
+#define WRITE_END 1
+
+static pid_t *child_pids = NULL;
+static int max_fd = 0;
+
+FILE *popen(const char *command, const char *type) {
+    int pipe_fds[2];
+    pid_t pid;
+    FILE *stream;
+
+    if (pipe(pipe_fds) == -1) {
+        return NULL;
+    }
+
+    if ((pid = fork()) == -1) {
+        close(pipe_fds[READ_END]);
+        close(pipe_fds[WRITE_END]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        if (*type == 'r') {
+            close(pipe_fds[READ_END]);
+            dup2(pipe_fds[WRITE_END], STDOUT_FILENO);
+        } else if (*type == 'w') {
+            close(pipe_fds[WRITE_END]);
+            dup2(pipe_fds[READ_END], STDIN_FILENO);
+        }
+
+        close(pipe_fds[WRITE_END]);
+        close(pipe_fds[READ_END]);
+
+        execl("/bin/sh", "sh", "-c", command, NULL);
+        _exit(1);
+    }
+
+    if (*type == 'r') {
+        stream = fdopen(pipe_fds[READ_END], type);
+        close(pipe_fds[WRITE_END]);
+    } else {
+        stream = fdopen(pipe_fds[WRITE_END], type);
+        close(pipe_fds[READ_END]);
+    }
+
+    if (fileno(stream) > max_fd) {
+        child_pids = realloc(child_pids, sizeof(pid_t) * (fileno(stream) + 1));
+        max_fd = fileno(stream);
+    }
+    child_pids[fileno(stream)] = pid;
+
+    return stream;
+}
+
+int pclose(FILE *stream) {
+    int status;
+    pid_t pid;
+
+    if (child_pids == NULL || fileno(stream) > max_fd) {
+        return -1;
+    }
+
+    pid = child_pids[fileno(stream)];
+    if (fclose(stream) == EOF) {
+        return -1;
+    }
+
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) {
+            return -1;
+        }
+    }
+
+    return status;
+}
